@@ -131,11 +131,6 @@
   }
   .b-send:disabled { opacity:0.5; cursor:default; }
   .b-send:hover:not(:disabled) { background: var(--navy2); }
-
-  .b-error {
-    background:#FBF0EC; border:1px solid #E9C6B8; color:#8A3A1D; font-size:12px;
-    padding:8px 12px; border-radius:8px; margin: 0 20px 10px 20px;
-  }
 </style>
 </head>
 <body>
@@ -151,7 +146,6 @@
   </div>
   <div class="b-banner">Protótipo acadêmico. Não é um canal oficial de RH da Ambev nem substitui o atendimento humano.</div>
   <div class="b-messages" id="b-messages"></div>
-  <div id="b-error-slot"></div>
   <div class="b-suggestions" id="b-suggestions">
     <div class="b-chip">Quantos dias de férias eu tenho direito?</div>
     <div class="b-chip">Como funciona o vale-refeição?</div>
@@ -166,17 +160,104 @@
 
 <script>
 (function () {
-  // O prompt de sistema e a base de conhecimento nunca são enviados ao navegador:
-  // eles ficam apenas no backend (server.js), que é quem chama a API da Anthropic.
-  const CHAT_ENDPOINT = '/api/chat';
+  // Protótipo de viabilidade: roda 100% no navegador, sem servidor, sem
+  // chave de API e sem chamadas de rede. As respostas vêm de casamento de
+  // palavras-chave contra a base de conhecimento definida em KNOWLEDGE_BASE,
+  // abaixo. Numa próxima etapa isso seria substituído por um LLM real
+  // (via backend, para não expor chave de API no navegador), mas o objetivo
+  // aqui é validar o fluxo de conversa e a cobertura das políticas.
+
+  const SENSITIVE_TOPICS = [
+    {
+      keywords: ['saude mental', 'saúde mental', 'ansiedade', 'depressao', 'depressão', 'burnout', 'psicolog'],
+      reply: 'Sinto muito que você esteja passando por isso. Esse é um assunto que merece cuidado humano, então não posso avaliar ou orientar sobre saúde mental. Por favor, procure a área de Saúde Ocupacional ou o RH humano — eles vão te acolher da forma certa.'
+    },
+    {
+      keywords: ['demiss', 'demit', 'desligamento', 'mandado embora', 'mandada embora', 'processo disciplinar', 'advertencia', 'advertência', 'suspensao', 'suspensão'],
+      reply: 'Questões de desligamento e processos disciplinares dependem de análise individual e humana, então não posso opinar ou dar detalhes sobre isso. Procure o RH humano para conversar sobre o seu caso com a atenção que ele merece.'
+    },
+    {
+      keywords: ['avaliacao de desempenho', 'avaliação de desempenho', 'minha nota', 'meu desempenho', 'fui avaliado'],
+      reply: 'Avaliações de desempenho individuais não são algo que eu possa comentar. Esse tipo de conversa é melhor com seu gestor direto ou com o RH humano, que têm o contexto completo do seu caso.'
+    },
+    {
+      keywords: ['salario', 'salário', 'meu holerite', 'meu contracheque', 'quanto eu ganho', 'meu pagamento'],
+      reply: 'Não tenho acesso a valores individuais de salário e não seria apropriado eu comentar sobre isso. Para consultar seu holerite ou tirar dúvidas sobre remuneração, use o portal do colaborador ou fale com o RH humano.'
+    }
+  ];
+
+  const KNOWLEDGE_BASE = [
+    {
+      topic: 'ferias',
+      keywords: ['ferias', 'férias', 'abono pecuniario', 'vender ferias', 'periodo aquisitivo'],
+      reply: 'Após 12 meses de trabalho (período aquisitivo), você tem direito a 30 dias corridos de férias, a gozar nos 12 meses seguintes. Elas podem ser divididas em até 3 períodos (um de no mínimo 14 dias e os demais de no mínimo 5 dias cada), com acordo do gestor, e é possível vender até 1/3 delas com pelo menos 30 dias de antecedência. A solicitação é feita pelo portal do colaborador. Para ver seu saldo exato de dias, consulte o portal do colaborador ou fale com o RH humano.'
+    },
+    {
+      topic: 'beneficios',
+      keywords: ['beneficio', 'benefício', 'vale refeicao', 'vale-refeicao', 'vale alimentacao', 'vale-alimentacao', 'plano de saude', 'plano de saúde', 'odontologico', 'odontológico', 'seguro de vida', 'previdencia', 'previdência', 'auxilio creche', 'auxílio creche', 'dependente'],
+      reply: 'Todo colaborador CLT tem direito a vale-refeição ou vale-alimentação, plano de saúde e odontológico com coparticipação, seguro de vida em grupo e previdência privada complementar opcional. Dependentes podem ser incluídos no plano de saúde em até 30 dias da contratação ou de eventos como casamento e nascimento de filho. Para valores e cobertura específicos, o canal certo é a equipe de Remuneração e Benefícios ou o RH humano.'
+    },
+    {
+      topic: 'ponto_jornada',
+      keywords: ['ponto', 'jornada', 'hora extra', 'horas extras', 'banco de horas', 'intervalo', 'atraso', 'home office', 'hibrido', 'híbrido'],
+      reply: 'A jornada padrão administrativa é de 44 horas semanais, com registro eletrônico de ponto obrigatório e intervalo mínimo de 1 hora para jornadas acima de 6 horas diárias. Horas extras têm adicional de 50% em dia útil e 100% aos domingos/feriados, ou podem virar banco de horas conforme o acordo coletivo. Atrasos e ausências devem ser justificados no portal do colaborador em até 48 horas. Dúvidas específicas sobre sua escala, fale com seu gestor ou o RH humano.'
+    },
+    {
+      topic: 'afastamentos',
+      keywords: ['atestado', 'licenca', 'licença', 'afastamento', 'maternidade', 'paternidade', 'doente', 'inss', 'casamento', 'falecimento', 'luto'],
+      reply: 'Atestados médicos de até 15 dias são pagos pela empresa; a partir do 16º dia, você é encaminhado ao INSS para auxílio-doença. Licença-maternidade é de 120 dias corridos, paternidade de 5 dias, licença-casamento de 3 dias e licença por falecimento de familiar direto de 2 dias. Todo atestado deve ser enviado pelo portal do colaborador em até 48 horas. Para dúvidas sobre seu caso específico, procure a área de Saúde Ocupacional ou o RH humano.'
+    },
+    {
+      topic: 'admissao',
+      keywords: ['admissao', 'admissão', 'documentos', 'contratacao', 'contratação', 'exame admissional', 'carteira de trabalho', 'pis', 'pasep'],
+      reply: 'Na admissão são exigidos: RG e CPF, comprovante de residência atualizado, Carteira de Trabalho Digital, número do PIS/PASEP, título de eleitor, certificado de reservista (quando aplicável), dados bancários e comprovante de escolaridade. O exame admissional é feito antes do primeiro dia de trabalho, agendado pela Saúde Ocupacional. Qualquer dúvida sobre seu processo específico, fale com o RH humano.'
+    }
+  ];
+
+  const IDENTITY_PHRASES = ['quem e voce', 'voce e humana', 'voce e real', 'canal oficial', 'voce e da ambev', 'inteligencia artificial'];
+  // Palavras curtas (ia, robo) usam limite de palavra à parte, senão "ia"
+  // daria falso positivo dentro de palavras comuns como "dias" ou "familia".
+  const IDENTITY_WORD_BOUNDARY = [/\bia\b/, /\brobo\b/, /\brobô\b/];
+  const IDENTITY_REPLY = 'Eu sou a Brinda, um assistente de inteligência artificial — um protótipo acadêmico de People Operations, não um canal oficial de RH da Ambev. Posso ajudar com dúvidas administrativas de RH, mas para decisões que exigem julgamento humano ou dados pessoais, o canal certo é o RH humano.';
+
+  const FALLBACK_REPLY = 'Essa informação não está na minha base de conhecimento deste protótipo, então não vou arriscar um palpite. Recomendo procurar o RH humano ou consultar o portal do colaborador para uma resposta oficial. Posso ajudar com dúvidas sobre férias, benefícios, ponto e jornada, afastamentos ou documentos de admissão.';
+
+  function normalize(text) {
+    return text
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+  }
+
+  function findReply(userText) {
+    const normalized = normalize(userText);
+
+    for (const topic of SENSITIVE_TOPICS) {
+      if (topic.keywords.some((kw) => normalized.includes(normalize(kw)))) {
+        return topic.reply;
+      }
+    }
+
+    if (
+      IDENTITY_PHRASES.some((kw) => normalized.includes(normalize(kw))) ||
+      IDENTITY_WORD_BOUNDARY.some((re) => re.test(normalized))
+    ) {
+      return IDENTITY_REPLY;
+    }
+
+    for (const entry of KNOWLEDGE_BASE) {
+      if (entry.keywords.some((kw) => normalized.includes(normalize(kw)))) {
+        return entry.reply;
+      }
+    }
+
+    return FALLBACK_REPLY;
+  }
 
   const messagesEl = document.getElementById('b-messages');
   const inputEl = document.getElementById('b-input');
   const sendBtn = document.getElementById('b-send');
   const suggestionsEl = document.getElementById('b-suggestions');
-  const errorSlot = document.getElementById('b-error-slot');
-
-  let history = [];
 
   function addBubble(role, text) {
     const row = document.createElement('div');
@@ -216,52 +297,22 @@
     if (row) row.remove();
   }
 
-  function showError(msg) {
-    errorSlot.innerHTML = '';
-    const div = document.createElement('div');
-    div.className = 'b-error';
-    div.textContent = msg;
-    errorSlot.appendChild(div);
-  }
-
-  function clearError() {
-    errorSlot.innerHTML = '';
-  }
-
-  async function sendMessage(text) {
+  function sendMessage(text) {
     if (!text || !text.trim()) return;
-    clearError();
     addBubble('user', text);
-    history.push({ role: 'user', content: text });
     inputEl.value = '';
     sendBtn.disabled = true;
     addTyping();
 
-    try {
-      const response = await fetch(CHAT_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: history })
-      });
+    const reply = findReply(text);
 
-      const data = await response.json();
+    // Pequeno atraso simulado só para dar a sensação de "pensando" na demo.
+    setTimeout(() => {
       removeTyping();
-
-      if (!response.ok) {
-        showError(data.error || 'Não foi possível obter resposta agora. Tente novamente em instantes.');
-        sendBtn.disabled = false;
-        return;
-      }
-
-      const reply = (data.reply || '').trim() || 'Não consegui gerar uma resposta agora. Pode reformular a pergunta?';
       addBubble('assistant', reply);
-      history.push({ role: 'assistant', content: reply });
-    } catch (err) {
-      removeTyping();
-      showError('Erro de conexão com o assistente. Verifique sua internet e tente novamente.');
-    }
-    sendBtn.disabled = false;
-    inputEl.focus();
+      sendBtn.disabled = false;
+      inputEl.focus();
+    }, 500 + Math.random() * 400);
   }
 
   sendBtn.addEventListener('click', () => sendMessage(inputEl.value));
